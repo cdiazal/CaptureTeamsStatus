@@ -8,11 +8,9 @@ public sealed class StatusDetector
 
     public string GetTeamsStatus(Color avg)
     {
-        // Regla de exclusión exacta (o con tolerancia)
         if (IsExcludedPresenting(avg))
             return TeamStatusColors.Unknown;
-
-        // Reglas originales
+        
         if (avg is { R: < 100, G: > 90, B: < 100 })
             return TeamStatusColors.Available;
         if (avg is { R: > 100, G: > 80, B: < 60 })
