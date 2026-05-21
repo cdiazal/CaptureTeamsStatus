@@ -27,9 +27,34 @@ public sealed class ScreenCaptureService
 
         if (_debug)
         {
-            var fileName = $"teams_icon_sample_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png";
-            bmp.Save(fileName, ImageFormat.Png);
-            Log.Information("Saved debug image {FileName}", fileName);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+            var iconFileName = $"teams_icon_sample_{timestamp}.png";
+            bmp.Save(iconFileName, ImageFormat.Png);
+            Log.Information("Saved debug image {FileName}", iconFileName);
+
+            using var markedBmp = new Bitmap(bmp);
+            using (var graphics = Graphics.FromImage(markedBmp))
+            using (var pen = new Pen(Color.Lime, 1))
+            {
+                graphics.DrawRectangle(pen, circleArea);
+            }
+
+            var markedFileName = $"teams_icon_marked_sample_{timestamp}.png";
+            markedBmp.Save(markedFileName, ImageFormat.Png);
+            Log.Information("Saved debug marked image {FileName}", markedFileName);
+
+            using var circleBmp = bmp.Clone(circleArea, bmp.PixelFormat);
+            using var enlargedCircleBmp = new Bitmap(circleBmp.Width * 8, circleBmp.Height * 8);
+            using (var graphics = Graphics.FromImage(enlargedCircleBmp))
+            {
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                graphics.DrawImage(circleBmp, new Rectangle(0, 0, enlargedCircleBmp.Width, enlargedCircleBmp.Height));
+            }
+
+            var circleFileName = $"teams_circle_sample_{timestamp}.png";
+            enlargedCircleBmp.Save(circleFileName, ImageFormat.Png);
+            Log.Information("Saved debug circle image {FileName}", circleFileName);
         }
 
         return GetAverageColorUnsafe(bmp, circleArea);
