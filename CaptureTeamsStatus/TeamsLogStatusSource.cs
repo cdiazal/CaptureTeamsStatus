@@ -2,16 +2,55 @@ using Serilog;
 using System.Text;
 using System.Text.RegularExpressions;
 
-// Reads the presence that the new Teams client (MSTeams) writes to its own log:
-// "UserPresenceAction: {cloud_context: https://teams.microsoft.com, availability: Busy}"
+// Reads the presence shown on the Teams taskbar badge, as the new Teams client (MSTeams) writes it to its own log:
+// "TaskbarBadgeServiceLegacy:Work: SetBadge Setting badge: GlyphBadge{"doNotDistrb"}, overlay: No hay elementos, estado No molestar"
+// The badge is the effective presence. "UserPresenceAction" lines are not: coming back from Away while in
+// Do not disturb logs Away -> DoNotDisturb -> Available, and the presence stays Do not disturb.
 public sealed class TeamsLogStatusSource : ITeamsStatusSource
 {
-    private static readonly Regex PresenceRegex = new(@"UserPresenceAction: \{[^}]*availability: (\w+)\}", RegexOptions.Compiled);
+    private static readonly Regex BadgeRegex = new(
+        @"BadgeService\w*:Work: SetBadge Setting badge: (?:GlyphBadge\{""(?<glyph>[^""]*)""\}|[^,]*),.*, (?<state>[^,]+?)\s*$",
+        RegexOptions.Compiled);
+
+    private static readonly Dictionary<string, string> GlyphStatuses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["available"] = TeamStatusColors.Available,
+        ["away"] = TeamStatusColors.Away,
+        ["busy"] = TeamStatusColors.Busy,
+        ["doNotDistrb"] = TeamStatusColors.DoNotDisturb
+    };
+
+    // The glyph is missing while there are unread notifications (NumericBadge), but the state text
+    // is always there. It is localized, so it is matched by its ending ("estado No molestar").
+    private static readonly (string Text, string Status)[] StateTexts =
+    [
+        ("Disponible", TeamStatusColors.Available),
+        ("Available", TeamStatusColors.Available),
+        ("Ausente", TeamStatusColors.Away),
+        ("Away", TeamStatusColors.Away),
+        ("Vuelvo enseguida", TeamStatusColors.Away),
+        ("Be right back", TeamStatusColors.Away),
+        ("Ocupado", TeamStatusColors.Busy),
+        ("Busy", TeamStatusColors.Busy),
+        ("En una llamada", TeamStatusColors.Busy),
+        ("In a call", TeamStatusColors.Busy),
+        ("En una reunión", TeamStatusColors.Busy),
+        ("In a meeting", TeamStatusColors.Busy),
+        ("No molestar", TeamStatusColors.DoNotDisturb),
+        ("Do not disturb", TeamStatusColors.DoNotDisturb),
+        ("Presentando", TeamStatusColors.DoNotDisturb),
+        ("Presenting", TeamStatusColors.DoNotDisturb),
+        ("Desconocido", TeamStatusColors.Unknown),
+        ("Unknown", TeamStatusColors.Unknown),
+        ("Desconectado", TeamStatusColors.Unknown),
+        ("Offline", TeamStatusColors.Unknown)
+    ];
 
     private readonly string _logDirectory;
+    private readonly HashSet<string> _warnedStates = [];
     private string? _currentFile;
     private long _position;
-    private string? _lastAvailability;
+    private string? _lastStatus;
     private bool _warnedNoData;
 
     public TeamsLogStatusSource(string? logDirectory)
@@ -49,10 +88,10 @@ public sealed class TeamsLogStatusSource : ITeamsStatusSource
 
         ProcessLines(ReadCompleteLines(_currentFile, ref _position));
 
-        if (_lastAvailability is null)
-            WarnNoData("No presence lines found in Teams logs at {LogDirectory}");
+        if (_lastStatus is null)
+            WarnNoData("No Teams badge lines found in Teams logs at {LogDirectory}");
 
-        return MapAvailability(_lastAvailability);
+        return _lastStatus ?? TeamStatusColors.Unknown;
     }
 
     private string[] GetLogFilesNewestFirst()
@@ -74,12 +113,12 @@ public sealed class TeamsLogStatusSource : ITeamsStatusSource
         {
             long position = 0;
             var last = ReadCompleteLines(file, ref position)
-                .Select(ParseAvailability)
-                .LastOrDefault(a => a is not null);
+                .Select(ParseBadge)
+                .LastOrDefault(b => b is not null);
 
             if (last is not null)
             {
-                SetAvailability(last);
+                SetStatus(last.Value);
                 return;
             }
         }
@@ -89,22 +128,19 @@ public sealed class TeamsLogStatusSource : ITeamsStatusSource
     {
         foreach (var line in lines)
         {
-            var availability = ParseAvailability(line);
-            if (availability is not null)
-                SetAvailability(availability);
+            var badge = ParseBadge(line);
+            if (badge is not null)
+                SetStatus(badge.Value);
         }
     }
 
-    private void SetAvailability(string availability)
+    private void SetStatus((string Status, string Badge) badge)
     {
-        if (availability == _lastAvailability)
+        if (badge.Status == _lastStatus)
             return;
 
-        Log.Debug("Teams availability: {Availability}", availability);
-        if (MapAvailability(availability) == TeamStatusColors.Unknown && availability is not ("Offline" or "PresenceUnknown"))
-            Log.Warning("Unmapped Teams availability {Availability}", availability);
-
-        _lastAvailability = availability;
+        Log.Debug("Teams badge: {Badge} -> {Status}", badge.Badge, badge.Status);
+        _lastStatus = badge.Status;
         _warnedNoData = false;
     }
 
@@ -117,20 +153,28 @@ public sealed class TeamsLogStatusSource : ITeamsStatusSource
         _warnedNoData = true;
     }
 
-    private static string? ParseAvailability(string line)
+    private (string Status, string Badge)? ParseBadge(string line)
     {
-        var match = PresenceRegex.Match(line);
-        return match.Success ? match.Groups[1].Value : null;
-    }
+        var match = BadgeRegex.Match(line);
+        if (!match.Success)
+            return null;
 
-    private static string MapAvailability(string? availability) => availability switch
-    {
-        "Available" or "AvailableIdle" => TeamStatusColors.Available,
-        "Away" or "BeRightBack" => TeamStatusColors.Away,
-        "Busy" or "BusyIdle" => TeamStatusColors.Busy,
-        "DoNotDisturb" => TeamStatusColors.DoNotDisturb,
-        _ => TeamStatusColors.Unknown
-    };
+        var glyph = match.Groups["glyph"].Value;
+        if (GlyphStatuses.TryGetValue(glyph, out var glyphStatus))
+            return (glyphStatus, glyph);
+
+        var state = match.Groups["state"].Value;
+        foreach (var (text, status) in StateTexts)
+        {
+            if (state.EndsWith(text, StringComparison.OrdinalIgnoreCase))
+                return (status, state);
+        }
+
+        if (_warnedStates.Add(state))
+            Log.Warning("Unmapped Teams badge state {State}", state);
+
+        return (TeamStatusColors.Unknown, state);
+    }
 
     // Returns only full lines, so a line Teams is still writing is picked up on the next read.
     private static string[] ReadCompleteLines(string path, ref long position)

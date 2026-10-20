@@ -25,13 +25,17 @@ Just pure practicality.
 
 The first version captured the screen and read the color of the Teams tray icon. It worked, but it broke silently whenever the icon moved: a Teams restart or update, a new tray icon, a resolution change...
 
-The new Teams client (MSTeams) writes every presence change to its own log:
+The new Teams client (MSTeams) writes every change of its taskbar badge (the presence dot on the icon) to its own log:
 
 ```
-UserPresenceAction: {cloud_context: https://teams.microsoft.com, availability: Busy}
+TaskbarBadgeServiceLegacy:Work: SetBadge Setting badge: GlyphBadge{"doNotDistrb"}, overlay: No hay elementos, estado No molestar
 ```
 
-The app now follows that log instead. It does not depend on the icon position, the screen resolution or the Teams UI language, and it picks up the change as soon as Teams applies it.
+The app now follows that log instead, so the light shows exactly what the Teams icon shows, without depending on the icon position or the screen resolution. It picks up the change as soon as Teams applies it.
+
+- The glyph (`available`, `away`, `busy`, `doNotDistrb`) is language-independent, but it is missing while there are unread notifications (`NumericBadge{1}`).
+- The state text (`estado No molestar`) is always there but localized; Spanish and English are supported.
+- `UserPresenceAction` lines in the same log are not used: they are requests, not the effective presence. Coming back from Away while in Do not disturb logs `Away -> DoNotDisturb -> Available`, and you are still in Do not disturb.
 
 Screen capture is still available as a fallback (see Configuration).
 
@@ -53,13 +57,13 @@ No external cloud authentication
 
 🎨 Status mapping
 
-| Teams availability            | Light call                                    |
-|-------------------------------|-----------------------------------------------|
-| Available, AvailableIdle      | `SetPresenceColor?color=Green`                |
-| Away, BeRightBack             | `SetPresenceColor?color=Yellow`               |
-| Busy, BusyIdle                | `SetPresenceColor?color=Red`                  |
-| DoNotDisturb                  | `Presenting`                                  |
-| Offline, PresenceUnknown      | No change                                     |
+| Teams badge                                       | Light call                       |
+|---------------------------------------------------|----------------------------------|
+| Available / Disponible                            | `SetPresenceColor?color=Green`   |
+| Away, Be right back / Ausente, Vuelvo enseguida   | `SetPresenceColor?color=Yellow`  |
+| Busy, In a call, In a meeting / Ocupado, ...      | `SetPresenceColor?color=Red`     |
+| Do not disturb, Presenting / No molestar, ...     | `Presenting`                     |
+| Offline, Unknown / Desconectado, Desconocido      | No change                        |
 
 ⚙️ Configuration
 
@@ -79,13 +83,13 @@ No external cloud authentication
 - `TeamsLogDirectory` (optional): defaults to `%LOCALAPPDATA%\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs`.
 - `Capture`: `PollIntervalMs` applies to both sources; the rest of the values (tray icon position and size) are only used by `Screen`.
 
-⚠️ The Teams log format is internal and undocumented, so a Teams update could change it. If that happens the app logs a warning (`No presence lines found` or `Unmapped Teams availability`) and you can switch to `"Source": "Screen"` in the meantime.
+⚠️ The Teams log format is internal and undocumented, so a Teams update could change it. If that happens the app logs a warning (`No Teams badge lines found` or `Unmapped Teams badge state`) and you can switch to `"Source": "Screen"` in the meantime.
 
 ```
  ┌────────────────────────┐
  │  .NET Console App      │
  │  - Tail Teams log      │
- │  - Parse availability  │
+ │  - Parse taskbar badge │
  │  - Map to light color  │
  └───────────┬────────────┘
              │ GET /TeamsPresence/...
