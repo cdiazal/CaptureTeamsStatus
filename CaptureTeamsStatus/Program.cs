@@ -1,6 +1,5 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Serilog;
-using System.Drawing;
 
 class Program
 {
@@ -19,11 +18,10 @@ class Program
 
         var settings = config.Get<AppSettings>() ?? new AppSettings();
                 
-        var detector = new StatusDetector();
-        var captureService = new ScreenCaptureService(
-            new Rectangle(settings.Capture.X, settings.Capture.Y, settings.Capture.Width, settings.Capture.Height),
-            new Rectangle(settings.Capture.CircleOffsetX, settings.Capture.CircleOffsetY, settings.Capture.CircleWidth, settings.Capture.CircleHeight),
-            settings.Capture.DebugImages);
+        Log.Information("Status source: {Source}", settings.Source.ToString());
+        ITeamsStatusSource statusSource = settings.Source == StatusSource.Screen
+            ? new ScreenStatusSource(settings.Capture)
+            : new TeamsLogStatusSource(settings.TeamsLogDirectory);
 
         var presenceClient = new PresenceClient(settings.ApiBaseUrl);
 
@@ -45,10 +43,7 @@ class Program
             {
                 try
                 {
-                    var avgColor = captureService.CaptureAverageColor();
-                    var status = detector.GetTeamsStatus(avgColor);
-
-                    Log.Debug("Sample AvgRGB=({R},{G},{B}) -> {Status}", avgColor.R, avgColor.G, avgColor.B, status);
+                    var status = statusSource.GetTeamsStatus();
 
                     if (status != lastPublished && status != TeamStatusColors.Unknown)
                     {
